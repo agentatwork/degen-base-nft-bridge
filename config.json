@@ -1,0 +1,11 @@
+{
+  "sourceRpc": "https://rpc.degen.tips",
+  "sourceChainId": 666666666,
+  "vaultAddress": "0x9dE9f9aED952a7DE181eC508115Ee25EAD65e6e7",
+  "destRpc": "https://mainnet.base.org",
+  "destChainId": 8453,
+  "nftAddress": "0x28A00eDE11088AC206bE79a421c6b2B96453DE50",
+  "confirmations": 10,
+  "pollMs": 10000,
+  "statusPort": 8788
+}

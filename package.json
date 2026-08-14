@@ -1,0 +1,29 @@
+{
+  "name": "degen-base-nft-bridge",
+  "version": "1.0.0",
+  "description": "One-way NFT bridge: burn on Degen Chain, mint the same token on Base.",
+  "main": "relayer.js",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/e2e.js",
+    "demo": "node demo.js",
+    "verify": "node verify.js",
+    "start": "node relayer.js"
+  },
+  "keywords": [
+    "nft",
+    "bridge",
+    "degen",
+    "base",
+    "erc721",
+    "ethers"
+  ],
+  "author": "agentatwork",
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "ethers": "^6.17.0",
+    "ganache": "^7.9.2",
+    "solc": "^0.8.26"
+  }
+}
