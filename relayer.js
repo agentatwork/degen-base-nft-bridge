@@ -46,7 +46,8 @@ const DEFAULTS = {
   minAgeSeconds: 600,
   batchSize: 50,
   maxAttempts: 5,
-  statusPort: 0, // 0 = no HTTP server
+  statusPort: 0,        // 0 = no HTTP server
+  statusHost: '127.0.0.1',
   cursorFile: path.join(__dirname, '.cursor.json'),
 };
 
@@ -65,7 +66,12 @@ class Relayer {
     this.vault = new ethers.Contract(this.cfg.vaultAddress, abiOf('BurnVault'), this.src);
     this.nft = new ethers.Contract(this.cfg.nftAddress, abiOf('BridgedNFT'), this.signer);
     this.cursor = 0;
-    this.stats = { scanned: 0, minted: 0, skipped: 0, failed: 0, waiting: 0, lastPass: null, errors: [], recent: [] };
+    this.stats = {
+      scanned: 0, minted: 0, skipped: 0, failed: 0, waiting: 0, lastPass: null, errors: [], recent: [],
+      // Totals read off the two chains rather than counted in memory: these survive a
+      // restart, and they are what a reader can check independently.
+      onChain: { receipts: null, bridged: null },
+    };
     this.attempts = new Map(); // receipt index -> failed attempts
     this.stopped = false;
   }
@@ -128,6 +134,11 @@ class Relayer {
 
     if (nextCursor !== this.cursor) { this.cursor = nextCursor; this.saveCursor(); }
     this.stats.lastPass = new Date().toISOString();
+    // Totals from the chains themselves, not from this process's counters, which start at
+    // zero every restart. Best-effort: a failed read must not fail the pass.
+    try {
+      this.stats.onChain = { receipts: n, bridged: Number(await this.nft.totalMinted()) };
+    } catch { /* leave the last known values */ }
     return minted;
   }
 
@@ -174,10 +185,44 @@ class Relayer {
     }
   }
 
+  /**
+   * Rebuild the recent-bridges table from the two chains, so a restarted relayer does not
+   * report "nothing bridged yet" about tokens that plainly exist. Counters live in process
+   * memory; the chain does not, and the chain is the one worth showing.
+   *
+   * Contract reads only — no eth_getLogs, whose block ranges are capped or billed by most
+   * providers. The cost is that a backfilled row has no mint transaction hash: this process
+   * did not send it and has no honest way to name it. It shows the destination token id
+   * instead, which is what you would look up anyway.
+   */
+  async backfill(limit = 20) {
+    try {
+      const n = Number(await this.vault.receiptCount());
+      const rows = [];
+      for (let i = Math.max(0, n - limit); i < n; i++) {
+        const r = await this.vault.receiptAt(i);
+        const [bridged, id] = await this.nft.bridgedTokenOf(this.cfg.sourceChainId, r.collection, r.tokenId);
+        if (!bridged) continue;
+        rows.push({
+          receipt: i, collection: r.collection, tokenId: r.tokenId.toString(),
+          holder: r.holder, token: id.toString(), tx: null,
+        });
+      }
+      // Anything this process minted since starting wins over the reconstruction.
+      const mine = new Set(this.stats.recent.map((x) => x.receipt));
+      this.stats.recent = [...rows.filter((x) => !mine.has(x.receipt)), ...this.stats.recent];
+      if (rows.length) this.log(`backfilled ${rows.length} earlier bridge${rows.length === 1 ? '' : 's'} from chain state`);
+    } catch (e) {
+      // A status page that cannot be built is not a reason to stop bridging.
+      this.log(`warn: backfill failed (${e.shortMessage || e.message})`);
+    }
+  }
+
   status() {
     return {
       source: { chainId: this.cfg.sourceChainId, vault: this.cfg.vaultAddress },
       destination: { chainId: this.cfg.destChainId, collection: this.cfg.nftAddress, relayer: this.signer.address },
+      onChain: this.stats.onChain,
       confirmations: this.cfg.confirmations,
       minAgeSeconds: this.cfg.minAgeSeconds,
       cursor: this.cursor,
@@ -194,7 +239,8 @@ class Relayer {
     const esc = (v) => String(v).replace(/[<&>"]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;', '"': '&quot;' }[c]));
     const rows = (s.recent || []).slice().reverse().map((r) => `<tr>
       <td>${esc(r.receipt)}</td><td class=m>${esc(r.collection)}</td><td>${esc(r.tokenId)}</td>
-      <td class=m>${esc(r.holder)}</td><td class=m>${esc(r.tx)}</td></tr>`).join('');
+      <td class=m>${esc(r.holder)}</td>
+      <td class=m>${r.tx ? esc(r.tx) : `token ${esc(r.token)} <span style="color:#888">(minted before this process started)</span>`}</td></tr>`).join('');
     const errs = (s.errors || []).slice().reverse()
       .map((e) => `<li>${esc(e.at)} — ${esc(e.msg)}</li>`).join('');
     return `<!doctype html><meta charset=utf-8><title>NFT bridge relayer</title>
@@ -207,9 +253,13 @@ table{border-collapse:collapse;width:100%;font-size:13px} td,th{text-align:left;
 dt{color:#666} dd{margin:0} .n{font-size:1.6rem;font-weight:600} .k{display:inline-block;margin-right:2rem}
 </style>
 <h1>NFT bridge relayer</h1>
-<p><span class=k><span class=n>${s.minted}</span> bridged</span>
+<p><span class=k><span class=n>${s.onChain?.bridged ?? s.minted}</span> bridged</span>
+<span class=k><span class=n>${s.onChain?.receipts ?? '—'}</span> burned</span>
 <span class=k><span class=n>${s.waiting}</span> awaiting confirmations</span>
 <span class=k><span class=n>${s.failed}</span> failed</span></p>
+<p style="color:#666;font-size:13px">Burn and bridge counts are read from the two chains on
+every pass, not counted in this process — restarting the relayer does not reset them.
+${s.minted} of them were minted by this process since it started.</p>
 <dl>
 <dt>source</dt><dd class=m>chain ${s.source.chainId} · vault ${esc(s.source.vault)}</dd>
 <dt>destination</dt><dd class=m>chain ${s.destination.chainId} · collection ${esc(s.destination.collection)}</dd>
@@ -226,13 +276,15 @@ ${errs ? `<h2>Recent errors</h2><ul>${errs}</ul>` : ''}
 <p>Every mint above is checkable without trusting this page: read
 <code class=m>receiptAt(n)</code> on the source vault, then <code class=m>bridgedTokenOf(chainId,
 collection, tokenId)</code> and <code class=m>originOf(id)</code> on the destination collection.
-Machine-readable copy of this page: <a href="/status.json">/status.json</a>.</p>`;
+Machine-readable copy of this page: <a href="status.json">status.json</a>.</p>`;
   }
 
   serve() {
     if (!this.cfg.statusPort) return null;
     const srv = http.createServer((req, res) => {
-      const json = (req.url || '').startsWith('/status.json');
+      // endsWith, not startsWith: behind a reverse proxy this may be mounted under a path
+      // prefix, and the HTML links to status.json relatively so both mountings work.
+      const json = (req.url || '').split('?')[0].endsWith('status.json');
       const body = json ? JSON.stringify(this.status(), null, 2) : this.page();
       res.writeHead(200, {
         'content-type': json ? 'application/json' : 'text/html; charset=utf-8',
@@ -240,7 +292,11 @@ Machine-readable copy of this page: <a href="/status.json">/status.json</a>.</p>
       });
       res.end(body);
     });
-    srv.listen(this.cfg.statusPort, () => this.log(`status on http://127.0.0.1:${srv.address().port}/`));
+    // Loopback by default. This is an operator's window into a process that holds a hot
+    // key, and the machine running it is usually not the machine you want it reachable
+    // from; put a reverse proxy in front if you want it public. statusHost overrides.
+    const host = this.cfg.statusHost || '127.0.0.1';
+    srv.listen(this.cfg.statusPort, host, () => this.log(`status on http://${host}:${srv.address().port}/`));
     return srv;
   }
 
@@ -252,6 +308,7 @@ Machine-readable copy of this page: <a href="/status.json">/status.json</a>.</p>
       `${this.cfg.nftAddress} (chain ${this.cfg.destChainId}) as ${this.signer.address}, ` +
       `${this.cfg.confirmations} confirmations, from receipt ${this.cursor}`
     );
+    await this.backfill();
     while (!this.stopped) {
       try {
         await this.pass();

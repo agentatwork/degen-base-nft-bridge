@@ -259,6 +259,19 @@ async function mine(provider, n) {
   ok('status lists the transactions it sent', st.recent.length === 4 && /^0x[0-9a-f]{64}$/.test(st.recent[0].tx));
   const html = relayer.page();
   ok('the status page renders every bridge', html.includes(vaultAddr) && html.includes(st.recent[3].tx));
+
+  // A status page whose numbers live in process memory reports "nothing bridged yet" after
+  // any restart, about tokens that plainly exist. The headline counts come off the chains.
+  ok('the headline counts come from the chains, not from memory',
+    st.onChain.receipts === Number(await vault.receiptCount())
+    && st.onChain.bridged === Number(await bridged.totalMinted()), JSON.stringify(st.onChain));
+  const restarted = new Relayer(cfg, (m) => logs.push(m));  // same config, empty memory
+  ok('  a restarted relayer starts with no history of its own', restarted.status().recent.length === 0);
+  await restarted.backfill();
+  ok('  and reconstructs earlier bridges from chain state alone', restarted.status().recent.length > 0,
+    JSON.stringify(restarted.status().recent));
+  ok('  naming the destination token rather than inventing a transaction it never sent',
+    restarted.status().recent.every((r) => r.tx === null && /^\d+$/.test(r.token)));
   // Error text comes from an RPC the operator does not control, and lands in an HTML page.
   relayer.stats.errors.push({ at: 'now', msg: '<script>alert(1)</script>' });
   const dirty = relayer.page();
