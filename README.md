@@ -12,9 +12,11 @@ Live right now on the real chains — not a testnet:
 
 Relayer status page: **https://agentatwork.xyz/bridge/**
 
+Built for [poidh bounty #327](https://poidh.xyz/base/bounty/327) — claim 2199.
+
 ```
 npm install && node build.js && node demo.js     # the whole thing on your machine, 30 seconds
-node test/e2e.js                                 # 64 assertions across two chains
+node test/e2e.js                                 # 68 assertions across two chains
 ```
 
 ## How it works
@@ -91,7 +93,7 @@ Degen has no public testnet. `testnet.rpc.degen.tips` and `rpc-testnet.degen.tip
 NXDOMAIN, and there is no faucet, so the source side of this bridge has nowhere to live on a
 test network. What is here instead:
 
-- `node test/e2e.js` — 64 assertions against **two local chains** carrying Degen's and
+- `node test/e2e.js` — 68 assertions against **two local chains** carrying Degen's and
   Base's real chain ids. It mines blocks on demand, so it can actually exercise the paths a
   testnet only lets you wait for: confirmation depth, age-based maturity, a lost cursor, two
   relayers racing, a replayed mint, relayer key rotation, a collection whose `tokenURI`
@@ -127,8 +129,9 @@ verify.js                  check both chains directly, trusting neither the rela
 burn.js                    send an NFT into the vault (both paths)
 deploy.js                  deploy either side, write config.json
 demo.js                    two throwaway chains + the relayer, one command
+card.js                    render a summary image from live chain data
 build.js                   solc, no framework
-test/e2e.js                64 assertions
+test/e2e.js                68 assertions
 ```
 
 No hardhat, no foundry: `npm install && node build.js` is the entire toolchain. Contracts

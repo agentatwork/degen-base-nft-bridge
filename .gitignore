@@ -8,3 +8,7 @@ relayer.key
 
 # scratch
 verify-out.txt
+submit_claim.js
+claim.txt
+card.svg
+card.png
